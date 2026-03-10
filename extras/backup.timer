@@ -1,0 +1,13 @@
+[Unit]
+Description=Run home backup daily and on boot
+
+[Timer]
+# Run 3 minutes after boot (gives drives time to settle)
+OnBootSec=3min
+# Also run daily at 02:30
+OnCalendar=*-*-* 02:30:00
+# If a run was missed (e.g. PC was off), catch up when it next starts
+Persistent=true
+
+[Install]
+WantedBy=timers.target

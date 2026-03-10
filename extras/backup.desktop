@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.1
+Type=Application
+Name=Run Backup Now
+Comment=Manually trigger an encrypted home directory backup
+Icon=/opt/backup/backup-icon.svg
+Exec=pkexec /opt/backup/backup-manual.sh
+Terminal=false
+Categories=System;Archiving;
+Keywords=backup;rsync;luks;
+StartupNotify=false

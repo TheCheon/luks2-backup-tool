@@ -1,0 +1,14 @@
+[Unit]
+Description=Home directory backup to encrypted drive
+After=local-fs.target network.target
+# Only run if the backup drive is physically present
+ConditionPathExists=/dev/disk/by-uuid/93228ec1-1e5d-4d69-b982-87ac70ba3bc9
+
+[Service]
+Type=oneshot
+ExecStart=/opt/backup/backup.sh
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
