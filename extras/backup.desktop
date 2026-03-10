@@ -1,11 +1,11 @@
 [Desktop Entry]
 Version=1.1
 Type=Application
-Name=Run Backup Now
-Comment=Manually trigger an encrypted home directory backup
+Name=Backup
+Comment=LUKS2 backup tool — status tray and manual backup trigger
 Icon=/opt/backup/backup-icon.svg
-Exec=pkexec /opt/backup/backup-manual.sh
+Exec=/usr/bin/python3 /opt/backup/backup-tray.py
 Terminal=false
 Categories=System;Archiving;
-Keywords=backup;rsync;luks;
+Keywords=backup;rsync;luks;tray;
 StartupNotify=false

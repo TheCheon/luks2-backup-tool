@@ -13,6 +13,13 @@ KEYFILE="$ETC_DIR/backup.key"
 CONF_SRC="$SCRIPT_DIR/backup.conf"
 CONF_DEST="$ETC_DIR/backup.conf"
 
+# Defaults overridden by step_local_backup
+LOCAL_BACKUP_ENABLED="false"
+LOCAL_BACKUP_DIR="/var/backup/snapshots"
+LOCAL_BACKUP_KEEP=10
+REMOTE_BACKUP_KEEP=10
+MIN_FREE_GB=5
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 BOLD='\033[1m'
@@ -214,8 +221,38 @@ step_enroll_keyfile() {
     fi
 }
 
+step_local_backup() {
+    header "Step 6 — Local snapshots"
+
+    info "Local snapshots = read-only hardlink copies on THIS machine."
+    info "Fast recovery from accidental deletions — no drive needed."
+    info "Space-efficient: only changed files take new space per snapshot."
+    echo ""
+
+    ask "Enable local snapshots? [Y/n]"
+    read -rp "      Choice: " _choice
+    if [[ "${_choice,,}" == "n" ]]; then
+        LOCAL_BACKUP_ENABLED="false"
+        info "Local snapshots disabled."
+        return
+    fi
+    LOCAL_BACKUP_ENABLED="true"
+
+    ask "Snapshot directory? [${LOCAL_BACKUP_DIR}]"
+    read -rp "      Path: " _path
+    LOCAL_BACKUP_DIR="${_path:-$LOCAL_BACKUP_DIR}"
+
+    ask "How many local snapshots to keep? [${LOCAL_BACKUP_KEEP}]"
+    read -rp "      Count: " _keep
+    LOCAL_BACKUP_KEEP="${_keep:-$LOCAL_BACKUP_KEEP}"
+
+    mkdir -p "$LOCAL_BACKUP_DIR"
+    chmod 755 "$LOCAL_BACKUP_DIR"
+    ok "Local snapshots: $LOCAL_BACKUP_DIR  (keep: $LOCAL_BACKUP_KEEP)"
+}
+
 step_write_config() {
-    header "Step 6 — Write config"
+    header "Step 7 — Write config"
 
     mkdir -p "$ETC_DIR"
 
@@ -256,6 +293,18 @@ EXCLUDES=(
 )
 
 LOG_FILE="/var/log/backup.log"
+
+# --- Snapshots ----------------------------------------------------------------
+# Timestamped incremental snapshots with --link-dest (hardlink unchanged files).
+REMOTE_BACKUP_KEEP=$REMOTE_BACKUP_KEEP
+
+# --- Local snapshots ----------------------------------------------------------
+LOCAL_BACKUP_ENABLED=$LOCAL_BACKUP_ENABLED
+LOCAL_BACKUP_DIR="$LOCAL_BACKUP_DIR"
+LOCAL_BACKUP_KEEP=$LOCAL_BACKUP_KEEP
+
+# --- Disk space warning -------------------------------------------------------
+MIN_FREE_GB=$MIN_FREE_GB
 CONF
 
     chmod 640 "$CONF_DEST"
@@ -263,14 +312,77 @@ CONF
     ok "Config written to $CONF_DEST"
 }
 
+step_tray() {
+    header "Step 8 — Tray application"
+
+    # Check Python3 + gi
+    if ! python3 -c "import gi" 2>/dev/null; then
+        warn "PyGObject (python3-gi) not found."
+        warn "  Arch:   pacman -S python-gobject"
+        warn "  Debian: apt install python3-gi python3-gi-cairo"
+    fi
+
+    # Check AppIndicator bindings
+    if ! python3 -c "
+import gi
+for lib in ('AyatanaAppIndicator3', 'AppIndicator3'):
+    try:
+        gi.require_version(lib, '0.1')
+        __import__('gi.repository.' + lib)
+        exit(0)
+    except Exception:
+        pass
+exit(1)
+" 2>/dev/null; then
+        warn "AppIndicator3 library not found."
+        warn "  Arch:   pacman -S libayatana-appindicator"
+        warn "  Debian: apt install gir1.2-ayatana-appindicator3-0.1"
+        warn "  GNOME:  install gnome-shell-extension-appindicator"
+    fi
+
+    # Create status dir + initial file
+    mkdir -p /var/lib/backup
+    if [[ ! -f /var/lib/backup/status.json ]]; then
+        printf '{\n  "status": "idle",\n  "last_backup": "",\n  "last_backup_result": "",\n  "current_operation": ""\n}\n' \
+            > /var/lib/backup/status.json
+    fi
+    chmod 644 /var/lib/backup/status.json
+    ok "Status dir: /var/lib/backup/"
+
+    # Determine actual (non-root) user
+    local actual_user="${SUDO_USER:-$SOURCE_USER}"
+    local user_home; user_home=$(getent passwd "$actual_user" | cut -d: -f6)
+    local user_systemd="$user_home/.config/systemd/user"
+
+    if [[ -z "$user_home" || ! -d "$user_home" ]]; then
+        warn "Could not locate home for $actual_user — skipping user service install."
+        return
+    fi
+
+    mkdir -p "$user_systemd"
+    install -m 644 "$SCRIPT_DIR/extras/backup-tray.service" "$user_systemd/backup-tray.service"
+    chown -R "$actual_user:$actual_user" "$user_home/.config/systemd"
+    ok "User service → $user_systemd/backup-tray.service"
+
+    sudo -u "$actual_user" systemctl --user daemon-reload 2>/dev/null || true
+    if sudo -u "$actual_user" systemctl --user enable backup-tray.service 2>/dev/null; then
+        ok "Tray service enabled (starts automatically on next graphical login)."
+    else
+        warn "Could not auto-enable. Run manually:"
+        warn "  systemctl --user enable --now backup-tray.service"
+    fi
+}
+
 step_install_files() {
-    header "Step 7 — Install project files"
+    header "Step 9 — Install project files"
 
     mkdir -p "$INSTALL_DIR"
 
     # Scripts
-    install -m 700 "$SCRIPT_DIR/backup.sh"        "$INSTALL_DIR/backup.sh"
-    install -m 700 "$SCRIPT_DIR/backup-manual.sh" "$INSTALL_DIR/backup-manual.sh"
+    install -m 700 "$SCRIPT_DIR/backup.sh"           "$INSTALL_DIR/backup.sh"
+    install -m 700 "$SCRIPT_DIR/backup-manual.sh"    "$INSTALL_DIR/backup-manual.sh"
+    install -m 755 "$SCRIPT_DIR/backup-tray.py"      "$INSTALL_DIR/backup-tray.py"
+    install -m 755 "$SCRIPT_DIR/backup-status.sh"    "$INSTALL_DIR/backup-status.sh"
     ok "Scripts → $INSTALL_DIR/"
 
     # Assets + docs
@@ -278,8 +390,9 @@ step_install_files() {
     [[ -f "$SCRIPT_DIR/README.md" ]] && install -m 644 "$SCRIPT_DIR/README.md" "$INSTALL_DIR/README.md" || true
     [[ -f "$SCRIPT_DIR/backup.conf" ]] && install -m 644 "$SCRIPT_DIR/backup.conf" "$INSTALL_DIR/backup.conf" || true
     if [[ -d "$SCRIPT_DIR/extras" ]]; then
-        [[ -f "$SCRIPT_DIR/extras/backup-icon.svg" ]] && install -m 644 "$SCRIPT_DIR/extras/backup-icon.svg" "$INSTALL_DIR/backup-icon.svg" || true
-        [[ -f "$SCRIPT_DIR/extras/CHANGELOG.md" ]] && install -m 644 "$SCRIPT_DIR/extras/CHANGELOG.md" "$INSTALL_DIR/CHANGELOG.md" || true
+        [[ -f "$SCRIPT_DIR/extras/backup-icon.svg" ]]        && install -m 644 "$SCRIPT_DIR/extras/backup-icon.svg"        "$INSTALL_DIR/backup-icon.svg"        || true
+        [[ -f "$SCRIPT_DIR/extras/backup-icon-active.svg" ]] && install -m 644 "$SCRIPT_DIR/extras/backup-icon-active.svg" "$INSTALL_DIR/backup-icon-active.svg" || true
+        [[ -f "$SCRIPT_DIR/extras/CHANGELOG.md" ]]           && install -m 644 "$SCRIPT_DIR/extras/CHANGELOG.md"           "$INSTALL_DIR/CHANGELOG.md"           || true
     fi
     ok "Docs + assets → $INSTALL_DIR/"
 
@@ -305,16 +418,20 @@ step_summary() {
     echo ""
     echo -e "  ${GREEN}Installation complete.${NC}"
     echo ""
-    echo "  Config:       $CONF_DEST"
-    echo "  Scripts:      $INSTALL_DIR/"
-    echo "  Log:          /var/log/backup.log"
-    echo "  Timer:        $(systemctl is-active backup.timer 2>/dev/null || echo unknown)"
+    echo "  Config:        $CONF_DEST"
+    echo "  Scripts:       $INSTALL_DIR/"
+    echo "  Log:           /var/log/backup.log"
+    echo "  Status:        /var/lib/backup/status.json"
+    echo "  Timer:         $(systemctl is-active backup.timer 2>/dev/null || echo unknown)"
+    [[ "$LOCAL_BACKUP_ENABLED" == "true" ]] && echo "  Local snaps:   $LOCAL_BACKUP_DIR  (keep $LOCAL_BACKUP_KEEP)" || true
     echo ""
+    echo "  Tray app:        python3 $INSTALL_DIR/backup-tray.py"
     echo "  Manual backup:   sudo $INSTALL_DIR/backup-manual.sh"
+    echo "  CLI status:      $INSTALL_DIR/backup-status.sh"
     echo "  Check timer:     systemctl status backup.timer"
-    echo "  Watch log:       journalctl -u backup.service -f"
+    echo "  Watch log:       tail -f /var/log/backup.log"
     echo ""
-    echo -e "  Edit ${BOLD}$CONF_DEST${NC} to add/remove backup folders at any time."
+    echo -e "  Edit ${BOLD}$CONF_DEST${NC} to change backup folders or snapshot settings."
     echo ""
 }
 
@@ -332,7 +449,9 @@ step_configure_user
 step_choose_dirs
 step_keyfile
 step_enroll_keyfile
+step_local_backup
 step_write_config
 step_install_files
+step_tray
 step_summary
 

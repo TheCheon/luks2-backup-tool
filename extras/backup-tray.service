@@ -1,0 +1,14 @@
+[Unit]
+Description=LUKS2 Backup Tool — System Tray
+Documentation=file:///opt/backup/README.md
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/backup/backup-tray.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=graphical-session.target
