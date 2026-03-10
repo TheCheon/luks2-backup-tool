@@ -365,10 +365,19 @@ exit(1)
     ok "User service → $user_systemd/backup-tray.service"
 
     sudo -u "$actual_user" systemctl --user daemon-reload 2>/dev/null || true
-    if sudo -u "$actual_user" systemctl --user enable backup-tray.service 2>/dev/null; then
-        ok "Tray service enabled (starts automatically on next graphical login)."
+
+    ask "Start the tray app automatically on login? [Y/n]"
+    read -rp "      Choice: " _autostart
+    if [[ "${_autostart,,}" == "n" ]]; then
+        info "Autostart skipped. Enable later with:"
+        info "  systemctl --user enable --now backup-tray.service"
+        return
+    fi
+
+    if sudo -u "$actual_user" systemctl --user enable --now backup-tray.service 2>/dev/null; then
+        ok "Tray service enabled and started."
     else
-        warn "Could not auto-enable. Run manually:"
+        warn "Could not auto-enable. Run manually as $actual_user:"
         warn "  systemctl --user enable --now backup-tray.service"
     fi
 }
